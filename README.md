@@ -17,7 +17,8 @@
 9. [Étape 7: Temporal feature engineering with Python](#étape-7-temporal-feature-engineering-with-python)
 10. [Étape 8: Feature selection, split, training and evaluation](#étape-8-feature-selection-chronological-split-training-and-evaluation)
 11. [Results](#results)
-12. [Conclusion](#conclusion)
+12. [Étape 9: Real-time inference pipeline](#étape-9-real-time-inference-pipeline)
+13. [Conclusion](#conclusion)
 
 ---
 
@@ -334,6 +335,70 @@ The **Evaluate Model** output compares the two models on the 20% test set (first
 
 ---
 
+## Étape 9: Real-time inference pipeline
+
+From the completed training pipeline job, selecting **Create inference pipeline → Real-time inference pipeline** automatically generates **`electric-load-forecasting-training-real time inference`**, converting the training graph into a scoring workflow:
+
+| Stage | Inference component | Role |
+| :--- | :--- | :--- |
+| Service input | **Web Service Input** & **Enter Data Manually** | Replaces `Import Data` to accept incoming request payloads |
+| Cleaning transform | **Apply Transformation** (`TD-electric-load-forecasting-training-Cle...`, `V \| 1`) | Applies the saved missing-data transformation artifact from training |
+| Feature pipeline | **Remove Duplicate Rows** → **Edit Metadata** → **Execute Python Script** → **Select Columns in Dataset** | Recomputes calendar, lag (`lag_1`, `lag_24`, `lag_168`), and rolling (`rolling_mean_24`) features and excludes `Datetime` |
+| Model scoring | **Score Model** (`score_model_1`) + saved model (`MD-electric-load-forecasting-training-Tr...`, `V \| 1`) | Generates hourly load predictions using the trained model artifact |
+| Service output | **Web Service Output** | Returns the scored dataset as the endpoint response |
+
+![Real-time inference pipeline, input and transformations](images/22-designer-realtime-inference-top.png)
+
+![Real-time inference pipeline, scoring and output](images/23-designer-realtime-inference-bottom.png)
+
+After verifying the graph, **Configure & Submit** launches the inference pipeline job (*"Success: Pipeline job has been submitted"*).
+
+
+### 9.1 Real-time endpoint deployment (`ikara-v4`)
+
+Once the real-time inference pipeline completed, it was deployed as a real-time REST web service named **`ikara-v4`** on an **Azure Container Instance** linked to model **`amlstudio-ikara-v4:1`**:
+
+| Setting | Value |
+| :--- | :--- |
+| **Service ID** | `ikara-v4` |
+| **Deployment state** | Healthy |
+| **Compute type** | Container instance (`0.1` CPU, `0.5 GB` memory) |
+| **Model ID** | `amlstudio-ikara-v4:1` |
+| **Authentication** | Key-based authentication enabled (`Bearer` token) |
+| **REST endpoint** | `http://7c1d7896-af86-401d-b1bc-d2521cf8318e.northeurope.azurecontainer.io/score` |
+| **Swagger URI** | `http://7c1d7896-af86-401d-b1bc-d2521cf8318e.northeurope.azurecontainer.io/swagger.json` |
+
+![Real-time endpoint ikara-v4](images/24-realtime-endpoint-ikara-v4.png)
+
+
+### 9.2 Endpoint validation with Postman
+
+The live `/score` endpoint was tested via a **`POST`** request in Postman with `Authorization: Bearer <PRIMARY_KEY>` and `Content-Type: application/json` headers:
+
+- **Input window (`Inputs.WebServiceInput0`):** Because the embedded Python script computes a 168-hour lag (`lag_168`) and drops initial incomplete rows (`dropna()`), the request payload supplies **170 consecutive hourly records** (`Datetime` and `PJME_MW`), producing 2 complete scored rows.
+- **Response (`200 OK`, `476 ms`, `972 B`):** Returns `"Results.WebServiceOutput0"` containing all computed calendar, lag, and rolling features (`hour`, `dayofweek`, `month`, `quarter`, `dayofyear`, `is_weekend`, `lag_1`, `lag_24`, `lag_168`, `rolling_mean_24`) alongside the predicted `Scored Labels`.
+
+```json
+{
+  "Inputs": {
+    "WebServiceInput0": [
+      {
+        "Datetime": "2018-08-01 00:00:00",
+        "PJME_MW": 32000.0
+      }
+    ]
+  },
+  "GlobalParameters": {}
+}
+```
+
+![Postman 200 OK inference response](images/25-postman-realtime-scoring.png)
+![Postman 200 OK inference response](images/26-postman-realtime-scoring.png)
+
+
+
+---
+
 ## Conclusion
 
 The pipeline covers the full chain:
@@ -342,4 +407,5 @@ The pipeline covers the full chain:
 2. An Azure ML workspace connected to that lake through a datastore and a versioned data asset.
 3. A reproducible Designer pipeline for cleaning, feature engineering, chronological splitting, training and evaluation.
 4. A clear model comparison, with the Boosted Decision Tree outperforming the linear baseline on every metric.
+5. A real-time inference pipeline deployed as an authenticated REST endpoint (`ikara-v4`) on Azure Container Instances and validated via Postman (`200 OK`).
 
